@@ -1,6 +1,11 @@
 # Learning GPT
 This is a step by step implementation of GPT model. Mostly I followed Andrej Karpathy's [Build GPT from Scratch](https://www.youtube.com/watch?v=kCc8FmEb1nY). The hardware I use to train the model is one GTX 3090 and each training could be finished in less than 10mins.
 
+## Obtain the Jupyter Notebook
+Please run `make notebook` to get the notebook from the `gpt_dev.py`. We use python file for better code change history tracking. 
+
+Under the hood, we use [jupytext](https://github.com/mwouts/jupytext) to convert between `py` and `ipynb`. I learned this from the [annotated-transformer](https://github.com/harvardnlp/annotated-transformer) repo.
+
 ## Training Data
 [Tiny Shakespeare](https://raw.githubusercontent.com/karpathy/char-rnn/master/data/tinyshakespeare/input.txt) dataset. Every trainig example is a random sample of `block_size` length of text from the training dataset. For each step, we group `batch_size` examples.
 
