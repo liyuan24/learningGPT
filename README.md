@@ -34,19 +34,41 @@ Each head is a standalone attention transformation. This could further improve t
 
 The naive implementation is just use a `ModuleList` to chain all heads together and use a `for` loop to go through each head. But since we use for loop, the processing of each head cannot be parallelized. In the next section, we will use batch matrix multiplication to speed up the process. 
 
-## Batch Matrix Multiplication Multi-head attention
+### Batch Matrix Multiplication Multi-head attention
 We could add another `head` dimension to the batch matrix and implement the multi-head attention with matrix multiplication tricks. From my experiment, with `8` heads, this could improve the training speed by about `4x`.
 
-## Add a Feedforward layer after the Multi-head attention
+### Add a Feedforward layer after the Multi-head attention
 
 The attention can be seen as a communication mechanism so that each token could understand the connections across different tokens. Adding a feedforward layer can be seen as learning to digest those information. This will further improve the model performance.
 
-## Multiple blocks of multi-head attention and feedforward
+### Multiple blocks of multi-head attention and feedforward
 
 Each block is multi-head attention + feedforward. Mutiple blocks stacking together could further improve the model performance.
 
-## Residual connection and Layer Norm
+### Residual connection and Layer Norm
 Deeper neural network makes it harder to train. It could suffer the vanishing or exploding gradients. To tackle those problems, we introduce [residual connection](https://arxiv.org/abs/1512.03385) and [layer normalization](https://arxiv.org/abs/1607.06450).
 
-## Adding Dropout
+### Adding Dropout
 Finally to mitigate overfitting for the deep neural network, we introduce [dropout](https://arxiv.org/abs/1207.0580) as a regularization.
+
+Dropout is added to 3 places:
+1. After the feedforward layer
+2. After the multi-head attention layer
+3. To the attention weights
+
+## A more advanced implementation
+
+A more advance implementation can be found in [nanoGPT repo](https://github.com/liyuan24/nanoGPT/blob/master/model.py) and I added my comments to `model.py`.
+
+A few changes to highlight here:
+1. weight initialization: for all weight except the bias for the linear layers, it uses normal distribution with mean 0 and std 0.02. For bias, it uses 0.
+2. `device` can be obtained from the input tensor, so no need to explicitly specify as a parameter
+3. `dropout` is also added after embedding layer
+4. AdamW optimizer: 
+    - it uses weight decay for parameters with more than 1 dimension. And no weight decay for 1 dimension parameters.
+    - it uses `fused` kernel if available.
+5. Feedforward layer:
+    - it uses `gelu` activation function.
+6. generate function
+    - It includes `top_k` sampling.
+    - It uses `temperature` to further control the randomness of the sampling.
