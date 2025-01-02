@@ -61,7 +61,9 @@ Dropout is added to 3 places:
 A more advance implementation can be found in [nanoGPT repo](https://github.com/liyuan24/nanoGPT/blob/master/model.py) and I added my comments to `model.py`.
 
 A few changes to highlight here:
-1. weight initialization: for all weight except the bias for the linear layers, it uses normal distribution with mean 0 and std 0.02. For bias, it uses 0.
+1. weight initialization: 
+    - for all weight except the bias for the linear layers, it uses normal distribution with mean 0 and std 0.02. For bias, it uses 0.
+    - for the final linear layer of feedforward and multi-head attention, it will scale the standard deviation by `1/sqrt(n_blocks)`. Why? Because this projetion will be added by the input, if you assume that the input of the linear layer has standard deviation 1, after all blocks, with this scaling, the output will have standard deviation 1. This is a good property. 
 2. `device` can be obtained from the input tensor, so no need to explicitly specify as a parameter
 3. `dropout` is also added after embedding layer
 4. AdamW optimizer: 
