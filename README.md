@@ -72,3 +72,6 @@ A few changes to highlight here:
 6. generate function
     - It includes `top_k` sampling.
     - It uses `temperature` to further control the randomness of the sampling.
+7. weight tying:
+    - it uses `tie_weights` to tie the weights of the embedding layer and the final linear layer
+    - you can uanderstand it in this way. For embedding layer, similar token have similar embedding. And in final linear layer to get the logits, let's say we have 1 token representation in `embed_dim` length. To get the logit of first output token, we will use the first row of the weight matrix of the final linear layer. And to get the logit of the second output token, we will use the second row of the weight matrix of the final linear layer. In the same way, here the two rows are two transformations. To get the simialr probability for two similar output tokens, the transformation should be similar. That is why we could share the weight between the embedding layer and the final linear layer.
