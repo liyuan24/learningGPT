@@ -1,4 +1,4 @@
-notebook: the_gpt_dev.py
+notebook: gpt_dev.py
 	jupytext --to ipynb gpt_dev.py
 
 py: gpt_dev.ipynb
