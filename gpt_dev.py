@@ -1401,7 +1401,8 @@ class FeedforwardWithDropout(nn.Module):
 def attention(q, k, v, mask, dropout=None):
     d_k = q.shape[-1]
     wei = q @ k.transpose(-1, -2) / math.sqrt(d_k) # B, nheads, T, T
-    wei.masked_fill_(mask==1, float('-inf'))
+    if mask is not None:
+        wei.masked_fill_(mask==1, float('-inf'))
     wei = F.softmax(wei, dim=-1)
     if dropout is not None:
         wei = dropout(wei)
@@ -1411,7 +1412,7 @@ def attention(q, k, v, mask, dropout=None):
 
 # %%
 class MultiHeadAttentionMatrixMultiplicationWithDropout(nn.Module):
-    def __init__(self, nheads, embed_size, block_size, dropout, device=torch.device('cpu')):
+    def __init__(self, nheads, embed_size, block_size, dropout, device=torch.device('cpu'), use_kv_cache=False):
         super().__init__()
         assert embed_size % nheads == 0
         self.query = nn.Linear(embed_size, embed_size)
@@ -1424,8 +1425,14 @@ class MultiHeadAttentionMatrixMultiplicationWithDropout(nn.Module):
         self.attn = None
         self.dropout = nn.Dropout(dropout)
         self.attn_dropout = nn.Dropout(dropout)
-    
+        self.use_kv_cache = use_kv_cache
+        self.block_size = block_size
+        self.cache_k = None
+        self.cache_v = None
+        
     def forward(self, x):
+        if self.use_kv_cache:
+            return self.forward_with_kv_cache(x)
         # x is B, T, C
         B, T = x.shape[0], x.shape[1]
         q = self.query(x) # B, T, C
@@ -1439,18 +1446,49 @@ class MultiHeadAttentionMatrixMultiplicationWithDropout(nn.Module):
         v.transpose_(1, 2) # B, nheads, T, head_dim
         mask = self.tril[:T, :T]
         
-        self.attn, v = attention(q, k, v, mask, self.attn_dropout) 
-        v = v.transpose(1, 2).contiguous().view(B, -1, self.nheads * self.head_dim)
-        v = self.out(v)
-        return self.dropout(v)
-
+        self.attn, output = attention(q, k, v, mask, self.attn_dropout) 
+        output = output.transpose(1, 2).contiguous().view(B, -1, self.nheads * self.head_dim)
+        output = self.out(output)
+        return self.dropout(output)
+    
+    def forward_with_kv_cache(self, x):
+        # x is B, T, C
+        B, T = x.shape[0], x.shape[1]
+        assert T <= self.block_size, (
+            "When using KV cache, the total length of the input "
+            "should be smaller than the block size"
+        )
+        # when cache is empty, we should calculate qkv for all tokens
+        if self.cache_k is None:
+            self.cache_k = self.key(x) # B, T, C
+            self.cache_v = self.value(x) # B, T, C
+            q_cur = self.query(x) # B, T, C
+        else:
+            # only do linear projection on the latest token
+            q_cur = self.query(x[:, [-1], :]) # B, 1, C
+            k_cur = self.key(x[:, [-1], :]) # B, 1, C
+            v_cur = self.value(x[:, [-1], :]) # B, 1, C
+            self.cache_k = torch.concat((self.cache_k, k_cur), dim=1) # B, T, C
+            self.cache_v = torch.concat((self.cache_v, v_cur), dim=1) # B, T, C
+        q_cur = q_cur.view(B, -1, self.nheads, self.head_dim) # B, T(or 1), nheads, head_dim
+        k = self.cache_k.view(B, -1, self.nheads, self.head_dim) # B, T, nheads, head_dim
+        v = self.cache_v.view(B, -1, self.nheads, self.head_dim) # B, T, nheads, head_dim
+        q_cur.transpose_(1, 2) # B, nheads, 1, head_dim
+        k.transpose_(1, 2) # B, nheads, T, head_dim
+        v.transpose_(1, 2) # B, nheads, T, head_dim
+        self.attn, out = attention(q_cur, k, v, mask=None)
+        out = out.transpose(1, 2).contiguous().view(B, -1, self.nheads * self.head_dim) # B, 1, C
+        # since kv cache is only used for inference, we don't have the dropout here
+        return self.out(out)
+        
+        
 
 # %%
 class TransformerBlock(nn.Module):
     '''Transformer block: communication followed by computation'''
-    def __init__(self, nheads, embed_size, block_size, dropout, device=torch.device('cpu')):
+    def __init__(self, nheads, embed_size, block_size, dropout, device=torch.device('cpu'), use_kv_cache=False):
         super().__init__()
-        self.mha = MultiHeadAttentionMatrixMultiplicationWithDropout(nheads, embed_size, block_size, dropout, device)
+        self.mha = MultiHeadAttentionMatrixMultiplicationWithDropout(nheads, embed_size, block_size, dropout, device, use_kv_cache)
         self.ffw = FeedforwardWithDropout(embed_size, dropout)
         self.layernorm1 = nn.LayerNorm(embed_size)
         self.layernorm2 = nn.LayerNorm(embed_size)       
@@ -1465,17 +1503,18 @@ class BigramLanguageModel(nn.Module):
     '''
     Bigram LM is used to predict the next token only considering the previous token
     '''
-    def __init__(self, vocab_size, block_size, embed_size, nheads, num_blocks, dropout, device=torch.device('cpu')):
+    def __init__(self, vocab_size, block_size, embed_size, nheads, num_blocks, dropout, device=torch.device('cpu'), use_kv_cache=False):
         super(BigramLanguageModel, self).__init__()
         # the embedding table would be of shape [vocab_size, embed_size]
         self.lut = nn.Embedding(vocab_size, embed_size)
         self.positional_embedding = nn.Embedding(block_size, embed_size)
         self.generator = nn.Linear(embed_size, vocab_size)
-        self.blocks = nn.ModuleList([TransformerBlock(nheads, embed_size, block_size, dropout, device) for _ in range(num_blocks)])
+        self.blocks = nn.ModuleList([TransformerBlock(nheads, embed_size, block_size, dropout, device, use_kv_cache) for _ in range(num_blocks)])
         self.layernorm = nn.LayerNorm(embed_size)
         self.loss = nn.CrossEntropyLoss()
         self.device = device
         self.block_size = block_size
+        
         
     def forward(self, inputs, targets=None):
         # inputs is of shape [B, T] and targets is of shape [B, T]
@@ -1520,27 +1559,52 @@ class BigramLanguageModel(nn.Module):
             idx = torch.concat((idx, samples), dim=1) # [B, T+1]
         return idx
 
-
 # %%
-num_blocks = 6
+num_blocks = 1
 batch_size = 64
-block_size = 256
+block_size = 8
 nheads = 8
 lr = 3e-4
 epochs = 5000
 vocab_size = len(uniq_chars)
-embed_size = 256
+embed_size = 8
 device = torch.device('cuda') if torch.cuda.is_available() else torch.device('cpu')
 eval_interval = 200
 eval_iters = 10
 dropout = 0.2
 
-bigram_model = BigramLanguageModel(vocab_size, block_size, embed_size, nheads, num_blocks, dropout, device)
-bigram_model = bigram_model.to(device)
-for param in bigram_model.parameters():
-    if param.dim() > 1:
-        nn.init.xavier_normal_(param)
-train(bigram_model, epochs, block_size, batch_size, device, lr)
-print(generate(bigram_model, device, 500))
+
+
+# %% [markdown]
+# ## Test KV Cache
 
 # %%
+# set the seed to have the same initial parameters
+torch.manual_seed(1337)
+
+
+# %%
+bigram_model_without_kv_cache = BigramLanguageModel(vocab_size, block_size, embed_size, nheads, num_blocks, dropout, device)
+bigram_model_without_kv_cache = bigram_model_without_kv_cache.to(device)
+bigram_model_without_kv_cache.eval() # set the model to evaluation mode to disable dropout
+for param in bigram_model_without_kv_cache.parameters():
+    if param.dim() > 1:
+        nn.init.xavier_normal_(param)
+# train(bigram_model, epochs, block_size, batch_size, device, lr)
+generation_without_kv_cache = generate(bigram_model_without_kv_cache, device, 6)
+print(generation_without_kv_cache)
+
+# %%
+# set the seed again to have the same initial parameters
+torch.manual_seed(1337)
+
+# %%
+bigram_model_with_kv_cache = BigramLanguageModel(vocab_size, block_size, embed_size, nheads, num_blocks, dropout, device, use_kv_cache=True)
+bigram_model_with_kv_cache = bigram_model_with_kv_cache.to(device)
+bigram_model_with_kv_cache.eval() # set the model to evaluation mode to disable dropout
+for param in bigram_model_with_kv_cache.parameters():
+    if param.dim() > 1:
+        nn.init.xavier_normal_(param)
+# train(bigram_model, epochs, block_size, batch_size, device, lr)
+generation_kv_cache = generate(bigram_model_with_kv_cache, device, 6)
+print(generation_kv_cache)
